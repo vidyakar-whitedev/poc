@@ -11,16 +11,19 @@ env:
 jobs:
   build-and-scan:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: engineerd/setup-kind@v0.6.0
-        with:
-          version: v0.20.0
+      - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
-      - run: docker build -t ${{ env.IMAGE_NAME }}:${{ env.TAG }} .
+      # Build Docker image
+      - name: Build image
+        run: docker build -t ${{ env.IMAGE_NAME }}:${{ env.TAG }} .
 
-      - uses: aquasecurity/trivy-action@master
+      # Scan with Trivy
+      - name: Trivy Scan
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.TAG }}'
           format: table
@@ -29,14 +32,26 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
-      - uses: engineerd/setup-kind@v0.9.0
+      # Setup kind
+      - name: Setup kind
+        uses: engineerd/setup-kind@v0.9.0
         with:
           version: v0.20.0
 
-      - run: kind load docker-image ${{ env.IMAGE_NAME }}:${{ env.TAG }}
+      # Verify cluster
+      - name: Check cluster
+        run: kubectl get nodes
 
-      - run: |
-          sed -i "s|image: my-app:latest|image: my-app:${{ env.TAG }}|" k8s/deployment.yaml
+      # Load image into kind
+      - name: Load image to kind
+        run: kind load docker-image ${{ env.IMAGE_NAME }}:${{ env.TAG }} --name kind
+
+      # Deploy to Kubernetes
+      - name: Deploy
+        run: |
+          sed -i "s|image: my-app:latest|image: my-app:${{ env.TAG }}|g" k8s/deployment.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
           kubectl rollout status deployment/my-app
+          kubectl get pods
+          kubectl get svc
