@@ -1,57 +1,25 @@
-name: CI/CD with kind
-
+---
+name: Container Image CI
 on:
-  push:
-    branches: [ "main" ]
-
-env:
-  IMAGE_NAME: my-app
-  TAG: ${{ github.sha }}
-
+  - push
 jobs:
-  build-and-scan:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      # Build Docker image
-      - name: Build image
-        run: docker build -t ${{ env.IMAGE_NAME }}:${{ env.TAG }} .
-
-      # Scan with Trivy
-      - name: Trivy Scan
-        uses: aquasecurity/trivy-action@master
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Build the Container Image
+        run: docker build . --file Dockerfile --tag localbuild/testimage:latest
+      - name: Scan Image
+        uses: anchore/scan-action@v3
+        id: scan
         with:
-          image-ref: '${{ env.IMAGE_NAME }}:${{ env.TAG }}'
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
-
-      # Setup kind
-      - name: Setup kind
-        uses: engineerd/setup-kind@v0.9.0
+          image: localbuild/testimage:latest
+          fail-build: true
+          output-format: sarif
+      - name: Upload Anchore Scan SARIF Report
+        uses: github/codeql-action/upload-sarif@v2
         with:
-          version: v0.20.0
-
-      # Verify cluster
-      - name: Check cluster
-        run: kubectl get nodes
-
-      # Load image into kind
-      - name: Load image to kind
-        run: kind load docker-image ${{ env.IMAGE_NAME }}:${{ env.TAG }} --name kind
-
-      # Deploy to Kubernetes
-      - name: Deploy
-        run: |
-          sed -i "s|image: my-app:latest|image: my-app:${{ env.TAG }}|g" k8s/deployment.yaml
-          kubectl apply -f k8s/deployment.yaml
-          kubectl apply -f k8s/service.yaml
-          kubectl rollout status deployment/my-app
-          kubectl get pods
-          kubectl get svc
+          sarif_file: ${{ steps.scan.outputs.sarif }}
