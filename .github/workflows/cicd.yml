@@ -36,12 +36,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y trivy
 
-      # Login to DockerHub
-      - name: Docker Login
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+      # # Login to DockerHub
+      # - name: Docker Login
+      #   uses: docker/login-action@v3
+      #   with:
+      #     username: ${{ secrets.DOCKER_USERNAME }}
+      #     password: ${{ secrets.DOCKER_PASSWORD }}
 
       # Build Docker Image
       - name: Build Docker Image
@@ -57,13 +57,13 @@ jobs:
             --no-progress \
             $IMAGE_NAME:$IMAGE_TAG
 
-      # Tag image for DockerHub
-      - name: Tag Image
-        run: |
-          docker tag $IMAGE_NAME:$IMAGE_TAG ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
+      # # Tag image for DockerHub
+      # - name: Tag Image
+      #   run: |
+      #     docker tag $IMAGE_NAME:$IMAGE_TAG ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
 
-      # Push image
-      - name: Push Docker Image
-        if: success()
-        run: |
-          docker push ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
+      # # Push image
+      # - name: Push Docker Image
+      #   if: success()
+      #   run: |
+      #     docker push ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
