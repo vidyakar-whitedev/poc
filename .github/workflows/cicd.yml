@@ -1,52 +1,67 @@
-name: CI/CD - Build, Scan & Push Chainguard Docker Image
+name: CI/CD - Build, Scan & Push Secure Chainguard Image
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+push:
+branches: [ main ]
+pull_request:
+branches: [ main ]
+
+env:
+IMAGE_NAME: my-app
+IMAGE_TAG: latest
 
 jobs:
-  build-scan-push:
-    runs-on: ubuntu-latest
+build-scan-push:
+runs-on: ubuntu-latest
 
-    steps:
-      # 1. Checkout repository
-      - name: Checkout code
-        uses: actions/checkout@v3
+```
+steps:
+  # 1️⃣ Checkout repository
+  - name: Checkout repository
+    uses: actions/checkout@v3
 
-      # 2. Set up Docker Buildx for multi-stage builds
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+  # 2️⃣ Setup Docker Buildx
+  - name: Setup Docker Buildx
+    uses: docker/setup-buildx-action@v3
 
-      # 3. Optional: Docker login for pushing images
-      - name: Docker login
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+  # 3️⃣ Install Trivy scanner
+  - name: Install Trivy
+    uses: aquasecurity/trivy-action@0.20.0
+    with:
+      scan-type: 'fs'
+      scan-ref: '.'
 
-      # 4. Build Docker image
-      - name: Build Docker image
-        run: |
-          docker buildx build \
-            --tag my-app:latest \
-            --load . \
-            --progress=plain
+  # 4️⃣ Docker login
+  - name: Login to DockerHub
+    uses: docker/login-action@v3
+    with:
+      username: ${{ secrets.DOCKER_USERNAME }}
+      password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # 5. Scan Docker image with Trivy for HIGH/CRITICAL vulnerabilities
-      - name: Scan Docker image with Trivy
-        run: |
-          trivy image \
-            --exit-code 1 \
-            --severity HIGH,CRITICAL \
-            my-app:latest
+  # 5️⃣ Build Docker image
+  - name: Build Docker image
+    run: |
+      docker buildx build \
+        --tag $IMAGE_NAME:$IMAGE_TAG \
+        --load .
 
-      # 6. Push Docker image only if scan passes
-      - name: Push Docker image
-        if: success()  # runs only if Trivy scan succeeds
-        run: |
-          docker tag my-app:latest ${{ secrets.DOCKER_USERNAME }}/my-app:latest
-          docker push ${{ secrets.DOCKER_USERNAME }}/my-app:latest
+  # 6️⃣ Scan container image (0 CVE allowed)
+  - name: Scan Docker image with Trivy
+    run: |
+      trivy image \
+        --exit-code 1 \
+        --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+        --no-progress \
+        $IMAGE_NAME:$IMAGE_TAG
+
+  # 7️⃣ Tag image
+  - name: Tag image
+    run: |
+      docker tag $IMAGE_NAME:$IMAGE_TAG ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
+
+  # 8️⃣ Push image only if scan passes
+  - name: Push image
+    if: success()
+    run: |
+      docker push ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
+```
