@@ -11,9 +11,10 @@ on:
 env:
   IMAGE_NAME: my-app
   IMAGE_TAG: latest
+  APP_PORT: 5000  # <-- Change this to whatever your app listens on
 
 jobs:
-  build-scan-push:
+  build-scan-test:
     runs-on: ubuntu-latest
 
     steps:
@@ -48,18 +49,18 @@ jobs:
         run: |
           docker build -t $IMAGE_NAME:$IMAGE_TAG .
 
-      # Run container to test if app starts
+      # Run container using dynamic port
       - name: Run Container
         run: |
-          docker run -d -p 8080:8080 --name test-container $IMAGE_NAME:$IMAGE_TAG
+          docker run -d -p $APP_PORT:$APP_PORT -e PORT=$APP_PORT --name test-container $IMAGE_NAME:$IMAGE_TAG
           sleep 10
 
-      # Check if application is serving
+      # Test Application endpoint
       - name: Test Application
         run: |
-          curl -f http://localhost:5000 || exit 1
+          curl -f http://localhost:$APP_PORT || exit 1
 
-      # Scan Image - Fail if ANY vulnerability found
+      # Scan Docker Image for vulnerabilities
       - name: Scan Docker Image
         run: |
           trivy image \
