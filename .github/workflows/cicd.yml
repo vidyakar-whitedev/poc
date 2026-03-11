@@ -1,25 +1,52 @@
----
-name: Container Image CI
+name: CI/CD - Build, Scan & Push Chainguard Docker Image
+
 on:
-  - push
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
 jobs:
-  build:
+  build-scan-push:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      # 1. Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # 2. Set up Docker Buildx for multi-stage builds
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
-      - name: Build the Container Image
-        run: docker build . --file Dockerfile --tag localbuild/testimage:latest
-      - name: Scan Image
-        uses: anchore/scan-action@v3
-        id: scan
+
+      # 3. Optional: Docker login for pushing images
+      - name: Docker login
+        uses: docker/login-action@v2
         with:
-          image: localbuild/testimage:latest
-          fail-build: true
-          output-format: sarif
-      - name: Upload Anchore Scan SARIF Report
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: ${{ steps.scan.outputs.sarif }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 4. Build Docker image
+      - name: Build Docker image
+        run: |
+          docker buildx build \
+            --tag my-app:latest \
+            --load . \
+            --progress=plain
+
+      # 5. Scan Docker image with Trivy for HIGH/CRITICAL vulnerabilities
+      - name: Scan Docker image with Trivy
+        run: |
+          trivy image \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            my-app:latest
+
+      # 6. Push Docker image only if scan passes
+      - name: Push Docker image
+        if: success()  # runs only if Trivy scan succeeds
+        run: |
+          docker tag my-app:latest ${{ secrets.DOCKER_USERNAME }}/my-app:latest
+          docker push ${{ secrets.DOCKER_USERNAME }}/my-app:latest
