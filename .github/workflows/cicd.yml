@@ -1,4 +1,4 @@
-name: CI-CD Build Scan Push
+name: CI-CD Build Scan Push with ngrok
 
 on:
   push:
@@ -37,6 +37,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y trivy
 
+      # Install ngrok
+      - name: Install ngrok
+        run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update && sudo apt-get install -y ngrok
+
       # Build Docker Image
       - name: Build Docker Image
         run: |
@@ -48,13 +55,21 @@ jobs:
           docker run -d -p $APP_PORT:$APP_PORT -e PORT=$APP_PORT --name test-container $IMAGE_NAME:$IMAGE_TAG
           sleep 10
 
+      # Start ngrok to expose Flask app
+      - name: Start ngrok
+        run: |
+          ngrok http $APP_PORT --log=stdout > ngrok.log &
+          sleep 5
+          # Get public URL from ngrok API
+          NGROK_URL=$(curl --silent http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          echo "🔗 Flask app is publicly accessible at: $NGROK_URL"
+          echo "##[set-output name=NGROK_URL::$NGROK_URL]"
+
       # Test Application endpoint
       - name: Test Application
         run: |
-          RESPONSE=$(curl -s -f http://localhost:$APP_PORT) || exit 1
+          curl -f http://localhost:$APP_PORT || exit 1
           echo "✅ App is serving properly!"
-          echo "💡 Output from app: $RESPONSE"
-          echo "🔗 You can access the app locally on port $APP_PORT"
 
       # Scan Docker Image
       - name: Scan Docker Image
