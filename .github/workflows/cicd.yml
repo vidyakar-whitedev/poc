@@ -36,7 +36,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y trivy
 
-      # # Login to DockerHub
+      # ❌ COMMENTED: DockerHub login (not needed if not pushing)
       # - name: Docker Login
       #   uses: docker/login-action@v3
       #   with:
@@ -48,6 +48,17 @@ jobs:
         run: |
           docker build -t $IMAGE_NAME:$IMAGE_TAG .
 
+      # Run container to test if app starts
+      - name: Run Container
+        run: |
+          docker run -d -p 8080:8080 --name test-container $IMAGE_NAME:$IMAGE_TAG
+          sleep 10
+
+      # Check if application is serving
+      - name: Test Application
+        run: |
+          curl -f http://localhost:8080 || exit 1
+
       # Scan Image - Fail if ANY vulnerability found
       - name: Scan Docker Image
         run: |
@@ -57,12 +68,12 @@ jobs:
             --no-progress \
             $IMAGE_NAME:$IMAGE_TAG
 
-      # # Tag image for DockerHub
+      # ❌ COMMENTED: Tag image for DockerHub
       # - name: Tag Image
       #   run: |
       #     docker tag $IMAGE_NAME:$IMAGE_TAG ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
 
-      # # Push image
+      # ❌ COMMENTED: Push image to DockerHub
       # - name: Push Docker Image
       #   if: success()
       #   run: |
