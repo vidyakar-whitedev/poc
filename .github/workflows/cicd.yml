@@ -11,7 +11,7 @@ on:
 env:
   IMAGE_NAME: my-app
   IMAGE_TAG: latest
-  APP_PORT: 5000  # <-- Change this to whatever your app listens on
+  APP_PORT: 5000  # Flask app port
 
 jobs:
   build-scan-test:
@@ -37,19 +37,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y trivy
 
-      # ❌ COMMENTED: DockerHub login (not needed if not pushing)
-      # - name: Docker Login
-      #   uses: docker/login-action@v3
-      #   with:
-      #     username: ${{ secrets.DOCKER_USERNAME }}
-      #     password: ${{ secrets.DOCKER_PASSWORD }}
-
       # Build Docker Image
       - name: Build Docker Image
         run: |
           docker build -t $IMAGE_NAME:$IMAGE_TAG .
 
-      # Run container using dynamic port
+      # Run container
       - name: Run Container
         run: |
           docker run -d -p $APP_PORT:$APP_PORT -e PORT=$APP_PORT --name test-container $IMAGE_NAME:$IMAGE_TAG
@@ -58,9 +51,12 @@ jobs:
       # Test Application endpoint
       - name: Test Application
         run: |
-          curl -f http://localhost:$APP_PORT || exit 1
+          RESPONSE=$(curl -s -f http://localhost:$APP_PORT) || exit 1
+          echo "✅ App is serving properly!"
+          echo "💡 Output from app: $RESPONSE"
+          echo "🔗 You can access the app locally on port $APP_PORT"
 
-      # Scan Docker Image for vulnerabilities
+      # Scan Docker Image
       - name: Scan Docker Image
         run: |
           trivy image \
@@ -69,13 +65,9 @@ jobs:
             --no-progress \
             $IMAGE_NAME:$IMAGE_TAG
 
-      # ❌ COMMENTED: Tag image for DockerHub
-      # - name: Tag Image
-      #   run: |
-      #     docker tag $IMAGE_NAME:$IMAGE_TAG ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
-
-      # ❌ COMMENTED: Push image to DockerHub
-      # - name: Push Docker Image
-      #   if: success()
-      #   run: |
-      #     docker push ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
+      # Cleanup container
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop test-container || true
+          docker rm test-container || true
