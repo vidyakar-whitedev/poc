@@ -57,7 +57,7 @@ jobs:
       # Check if application is serving
       - name: Test Application
         run: |
-          curl -f http://localhost:8080 || exit 1
+          curl -f http://localhost:5000 || exit 1
 
       # Scan Image - Fail if ANY vulnerability found
       - name: Scan Docker Image
