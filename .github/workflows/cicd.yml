@@ -1,66 +1,69 @@
-name: CI/CD - Build, Scan & Push Secure Chainguard Image
+name: CI-CD Build Scan Push
 
 on:
-push:
-branches: [ main ]
-pull_request:
-branches: [ main ]
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 env:
-IMAGE_NAME: my-app
-IMAGE_TAG: latest
+  IMAGE_NAME: my-app
+  IMAGE_TAG: latest
 
 jobs:
-build-scan-push:
-runs-on: ubuntu-latest
+  build-scan-push:
+    runs-on: ubuntu-latest
 
+    steps:
+      # Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-steps:
-  # 1️⃣ Checkout repository
-  - name: Checkout repository
-    uses: actions/checkout@v3
+      # Setup Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-  # 2️⃣ Setup Docker Buildx
-  - name: Setup Docker Buildx
-    uses: docker/setup-buildx-action@v3
+      # Install Trivy vulnerability scanner
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget https://aquasecurity.github.io/trivy-repo/deb/public.key
+          sudo apt-key add public.key
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
 
-  # 3️⃣ Install Trivy scanner
-  - name: Install Trivy
-    uses: aquasecurity/trivy-action@0.20.0
-    with:
-      scan-type: 'fs'
-      scan-ref: '.'
+      # Login to DockerHub
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-  # 4️⃣ Docker login
-  - name: Login to DockerHub
-    uses: docker/login-action@v3
-    with:
-      username: ${{ secrets.DOCKER_USERNAME }}
-      password: ${{ secrets.DOCKER_PASSWORD }}
+      # Build Docker Image
+      - name: Build Docker Image
+        run: |
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
 
-  # 5️⃣ Build Docker image
-  - name: Build Docker image
-    run: |
-      docker buildx build \
-        --tag $IMAGE_NAME:$IMAGE_TAG \
-        --load .
+      # Scan Image - Fail if ANY vulnerability found
+      - name: Scan Docker Image
+        run: |
+          trivy image \
+            --exit-code 1 \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --no-progress \
+            $IMAGE_NAME:$IMAGE_TAG
 
-  # 6️⃣ Scan container image (0 CVE allowed)
-  - name: Scan Docker image with Trivy
-    run: |
-      trivy image \
-        --exit-code 1 \
-        --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
-        --no-progress \
-        $IMAGE_NAME:$IMAGE_TAG
+      # Tag image for DockerHub
+      - name: Tag Image
+        run: |
+          docker tag $IMAGE_NAME:$IMAGE_TAG ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
 
-  # 7️⃣ Tag image
-  - name: Tag image
-    run: |
-      docker tag $IMAGE_NAME:$IMAGE_TAG ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
-
-  # 8️⃣ Push image only if scan passes
-  - name: Push image
-    if: success()
-    run: |
-      docker push ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
+      # Push image
+      - name: Push Docker Image
+        if: success()
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/$IMAGE_NAME:$IMAGE_TAG
