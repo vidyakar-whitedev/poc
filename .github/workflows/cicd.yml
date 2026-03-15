@@ -11,8 +11,8 @@ on:
 env:
   IMAGE_NAME: my-flask-app
   IMAGE_TAG: latest
-  APP_PORT: 5000
-  NODE_PORT: 30000
+  NODE_PORT: 30000        # Must match service.yaml nodePort AND kind-config.yaml hostPort
+  SCANNER_REPORT: scanner.txt
   # DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USERNAME }}
   # DOCKERHUB_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
@@ -20,6 +20,7 @@ jobs:
   build-deploy-test:
     runs-on: ubuntu-latest
     steps:
+
       # Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -50,6 +51,33 @@ jobs:
       #     docker tag $IMAGE_NAME:$IMAGE_TAG $DOCKERHUB_USERNAME/$IMAGE_NAME:$IMAGE_TAG
       #     docker push $DOCKERHUB_USERNAME/$IMAGE_NAME:$IMAGE_TAG
 
+      # ===================== Scan Docker image =====================
+
+      # Scan with Trivy
+      - name: Scan Docker image with Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          echo "=== Scanning Docker image with Trivy ===" | tee $SCANNER_REPORT
+          trivy image $IMAGE_NAME:$IMAGE_TAG | tee -a $SCANNER_REPORT
+
+      # Scan with Grype
+      - name: Scan Docker image with Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          echo "=== Scanning Docker image with Grype ===" | tee -a $SCANNER_REPORT
+          grype $IMAGE_NAME:$IMAGE_TAG | tee -a $SCANNER_REPORT
+          echo "=== Scan complete! Reports saved in $SCANNER_REPORT ==="
+
+      # Upload scan report as artifact
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-report
+          path: ${{ env.SCANNER_REPORT }}
+
+      # =============================================================
+
       # Install kind and kubectl
       - name: Install kind and kubectl
         run: |
@@ -60,9 +88,9 @@ jobs:
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
 
-      # Create kind cluster
+      # Create kind cluster with port mapping (extraPortMappings → localhost:30000 works directly)
       - name: Create kind cluster
-        run: kind create cluster --name flask-cluster
+        run: kind create cluster --name flask-cluster --config kind-config.yaml
 
       # Load Docker image into kind
       - name: Load Docker image into kind
@@ -74,16 +102,46 @@ jobs:
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      # Wait for pod to be ready
-      - name: Wait for pod
+      # Wait for pod to be created before checking readiness
+      - name: Wait for pod to be created
         run: |
-          kubectl wait --for=condition=ready pod -l app=flask --timeout=60s
+          for i in $(seq 1 30); do
+            POD_COUNT=$(kubectl get pods -l app=flask --no-headers 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$POD_COUNT" -gt 0 ]; then
+              echo "Pod(s) found ($POD_COUNT). Waiting for readiness..."
+              break
+            fi
+            echo "No pods yet... ($i/30)"
+            sleep 2
+          done
 
-      # Test Flask app via NodePort
+      # Wait for pod to be ready
+      - name: Wait for pod to be ready
+        run: |
+          kubectl wait --for=condition=ready pod -l app=flask --timeout=120s
+
+      # Test Flask app via NodePort (extraPortMappings makes localhost:30000 reachable directly)
       - name: Test Flask App
         run: |
-          curl -f http://localhost:$NODE_PORT || exit 1
-          echo "✅ Flask app is serving properly! Access via localhost:$NODE_PORT"
+          FLASK_READY=0
+          for i in $(seq 1 15); do
+            if curl -fs "http://localhost:$NODE_PORT" > /dev/null 2>&1; then
+              echo "✅ Flask app is ready!"
+              FLASK_READY=1
+              break
+            else
+              echo "Waiting for Flask... ($i/15)"
+              sleep 2
+            fi
+          done
+          if [ "$FLASK_READY" -ne 1 ]; then
+            echo "❌ Flask never became ready."
+            kubectl logs -l app=flask
+            exit 1
+          fi
+          curl -f "http://localhost:$NODE_PORT"
+          echo ""
+          echo "✅ Flask app is serving properly at http://localhost:$NODE_PORT"
 
       # Cleanup kind cluster
       - name: Cleanup kind cluster

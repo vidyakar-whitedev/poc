@@ -2,6 +2,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: flask-deployment
+  labels:
+    app: flask
 spec:
   replicas: 1
   selector:
@@ -14,9 +16,13 @@ spec:
     spec:
       containers:
       - name: flask
-        image: my-flask-app:latest
+        image: my-flask-app:latest   # your Docker image
+        imagePullPolicy: IfNotPresent  # <-- critical: use local image, don't pull
         ports:
         - containerPort: 5000
-        env:
-        - name: PORT
-          value: "5000"
+        readinessProbe:               # ensures pod is ready only after Flask starts
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 2
+            periodSeconds: 2

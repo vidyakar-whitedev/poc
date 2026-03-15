@@ -8,6 +8,6 @@ spec:
     app: flask
   ports:
     - protocol: TCP
-      port: 5000
-      targetPort: 5000
-      nodePort: 30000
+      port: 5000        # service port inside cluster
+      targetPort: 5000  # pod port
+      nodePort: 30000   # accessible from outside via node IP
