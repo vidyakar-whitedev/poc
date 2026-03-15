@@ -1,86 +1,69 @@
-name: CI-CD Flask App on kind
+name: CI-CD Flask App on KIND
 
+# ─────────────────────────────────────────────
+#  Triggers
+# ─────────────────────────────────────────────
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
-  # Manually trigger with browser access window
+    branches: [main]
   workflow_dispatch:
     inputs:
       expose_browser:
-        description: 'Expose app publicly so you can open it in a browser (bore tunnel)'
+        description: 'Open app in browser via bore tunnel (true/false)'
         required: false
         default: 'false'
         type: choice
-        options:
-          - 'false'
-          - 'true'
+        options: ['false', 'true']
 
+# ─────────────────────────────────────────────
+#  Shared environment variables
+# ─────────────────────────────────────────────
 env:
   IMAGE_NAME: my-flask-app
-  IMAGE_TAG: latest
-  APP_PORT: 5000          # Flask container port (used for port-forward in CI)
-  NODE_PORT: 30000        # NodePort in service.yaml (used in local script only)
+  IMAGE_TAG:  latest
+  APP_PORT:   5000      # Flask container port
+  NODE_PORT:  30000     # NodePort in service.yaml
+  CLUSTER:    flask-cluster
   SCANNER_REPORT: scanner.txt
-  # DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-  # DOCKERHUB_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
+# ─────────────────────────────────────────────
+#  Job: build → scan → deploy → test
+#  Runner: ubuntu-latest (free GitHub-hosted)
+# ─────────────────────────────────────────────
 jobs:
   build-deploy-test:
     runs-on: ubuntu-latest
+
     steps:
 
-      # Checkout repository
+      # ── 1. Source code ───────────────────────
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # Set up Docker Buildx
+      # ── 2. Docker build ──────────────────────
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # -------------------------------
-      # DockerHub login (commented)
-      # -------------------------------
-      # - name: Docker Login
-      #   uses: docker/login-action@v3
-      #   with:
-      #     username: ${{ secrets.DOCKER_USERNAME }}
-      #     password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Build Docker image
+        run: docker build -t $IMAGE_NAME:$IMAGE_TAG .
 
-      # Build Docker Image
-      - name: Build Docker Image
+      # ── 3. Security scans ────────────────────
+      - name: Scan image with Trivy
         run: |
-          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          echo "=== Trivy Scan ===" | tee $SCANNER_REPORT
+          trivy image --exit-code 0 $IMAGE_NAME:$IMAGE_TAG | tee -a $SCANNER_REPORT
 
-      # -------------------------------
-      # Push Docker image (commented)
-      # -------------------------------
-      # - name: Push Docker Image
-      #   run: |
-      #     docker tag $IMAGE_NAME:$IMAGE_TAG $DOCKERHUB_USERNAME/$IMAGE_NAME:$IMAGE_TAG
-      #     docker push $DOCKERHUB_USERNAME/$IMAGE_NAME:$IMAGE_TAG
-
-      # ===================== Scan Docker image =====================
-
-      # Scan with Trivy
-      - name: Scan Docker image with Trivy
+      - name: Scan image with Grype
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          echo "=== Scanning Docker image with Trivy ===" | tee $SCANNER_REPORT
-          trivy image $IMAGE_NAME:$IMAGE_TAG | tee -a $SCANNER_REPORT
-
-      # Scan with Grype
-      - name: Scan Docker image with Grype
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-          echo "=== Scanning Docker image with Grype ===" | tee -a $SCANNER_REPORT
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+          echo "=== Grype Scan ===" | tee -a $SCANNER_REPORT
           grype $IMAGE_NAME:$IMAGE_TAG | tee -a $SCANNER_REPORT
-          echo "=== Scan complete! Reports saved in $SCANNER_REPORT ==="
 
-      # Upload scan report as artifact
       - name: Upload scan report
         if: always()
         uses: actions/upload-artifact@v4
@@ -88,137 +71,136 @@ jobs:
           name: security-scan-report
           path: ${{ env.SCANNER_REPORT }}
 
-      # =============================================================
-
-      # Install kind and kubectl
-      - name: Install kind and kubectl
+      # ── 4. Kubernetes tooling ────────────────
+      - name: Install kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.25.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
+          curl -Lo /usr/local/bin/kind \
+            https://kind.sigs.k8s.io/dl/v0.25.0/kind-linux-amd64
+          chmod +x /usr/local/bin/kind
 
-      # Create kind cluster (kind-config.yaml has extraPortMappings for local use)
-      - name: Create kind cluster
-        run: kind create cluster --name flask-cluster --config kind-config.yaml
+      - name: Install kubectl
+        run: |
+          KUBECTL_VER=$(curl -sL https://dl.k8s.io/release/stable.txt)
+          curl -Lo /usr/local/bin/kubectl \
+            "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/amd64/kubectl"
+          chmod +x /usr/local/bin/kubectl
 
-      # Load Docker image into kind
-      - name: Load Docker image into kind
-        run: kind load docker-image $IMAGE_NAME:$IMAGE_TAG --name flask-cluster
+      # ── 5. KIND cluster ──────────────────────
+      # kind-config.yaml includes extraPortMappings so NodePort 30000
+      # is bound to the runner's localhost (useful for local dev too).
+      - name: Create KIND cluster
+        run: kind create cluster --name $CLUSTER --config kind-config.yaml
 
-      # Apply Kubernetes manifests
-      - name: Deploy to kind
+      # ── 6. Load image ────────────────────────
+      # No registry needed — image is loaded directly into the cluster.
+      - name: Load Docker image into KIND
+        run: kind load docker-image $IMAGE_NAME:$IMAGE_TAG --name $CLUSTER
+
+      # ── 7. Deploy ────────────────────────────
+      - name: Apply Kubernetes manifests
         run: |
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      # Wait for pod to be created before checking readiness
+      # ── 8. Wait for pod ──────────────────────
+      # Wait for the pod to be *created* first (kubectl wait needs
+      # at least one matching resource to exist before it can poll).
       - name: Wait for pod to be created
         run: |
+          echo "Waiting for pod to appear..."
           for i in $(seq 1 30); do
-            POD_COUNT=$(kubectl get pods -l app=flask --no-headers 2>/dev/null | wc -l | tr -d ' ')
-            if [ "$POD_COUNT" -gt 0 ]; then
-              echo "Pod(s) found ($POD_COUNT). Waiting for readiness..."
+            COUNT=$(kubectl get pods -l app=flask --no-headers 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$COUNT" -gt 0 ]; then
+              echo "✅ Pod found. Proceeding to readiness check."
               break
             fi
-            echo "No pods yet... ($i/30)"
+            echo "  No pods yet ($i/30) — waiting 2s..."
             sleep 2
           done
 
-      # Wait for pod to be ready
       - name: Wait for pod to be ready
-        run: |
-          kubectl wait --for=condition=ready pod -l app=flask --timeout=120s
+        run: kubectl wait --for=condition=ready pod -l app=flask --timeout=120s
 
-      # Test Flask app via port-forward
-      # NOTE: In GitHub Actions, the runner is a private remote VM — there is NO way to
-      # open a browser to localhost:30000 from outside. NodePort extraPortMappings only
-      # works reliably on your local Mac. In CI we use kubectl port-forward, which tunnels
-      # through the kube-apiserver and works reliably regardless of Docker network config.
-      - name: Test Flask App
+      # ── 9. Smoke test ────────────────────────
+      # In GH Actions the runner is a private VM with no public IP.
+      # NodePort is not reachable from outside; kubectl port-forward
+      # tunnels through the kube-apiserver and always works reliably.
+      - name: Test Flask app
         run: |
-          POD_NAME=$(kubectl get pods -l app=flask -o jsonpath='{.items[0].metadata.name}')
-          echo "Port-forwarding pod: $POD_NAME"
-          kubectl port-forward pod/$POD_NAME $APP_PORT:$APP_PORT &
+          POD=$(kubectl get pods -l app=flask -o jsonpath='{.items[0].metadata.name}')
+          echo "Port-forwarding $POD → localhost:$APP_PORT"
+          kubectl port-forward pod/$POD $APP_PORT:$APP_PORT &
           PF_PID=$!
 
-          FLASK_READY=0
+          echo "Waiting for Flask to respond..."
+          READY=0
           for i in $(seq 1 15); do
             if curl -fs "http://localhost:$APP_PORT" > /dev/null 2>&1; then
-              echo "✅ Flask app is ready!"
-              FLASK_READY=1
-              break
-            else
-              echo "Waiting for Flask... ($i/15)"
-              sleep 2
+              READY=1; break
             fi
+            echo "  Attempt $i/15 — sleeping 2s..."
+            sleep 2
           done
 
-          if [ "$FLASK_READY" -ne 1 ]; then
-            echo "❌ Flask never became ready."
+          if [ "$READY" -ne 1 ]; then
+            echo "❌ Flask did not respond after 30s."
             kubectl logs -l app=flask
             kill $PF_PID 2>/dev/null || true
             exit 1
           fi
 
           RESPONSE=$(curl -s "http://localhost:$APP_PORT")
-          echo "Flask response: $RESPONSE"
           echo ""
-          echo "✅ Flask app is serving properly!"
+          echo "────────────────────────────────────"
+          echo " Flask response: $RESPONSE"
+          echo " ✅ App is working correctly!"
+          echo "────────────────────────────────────"
           kill $PF_PID 2>/dev/null || true
 
-      # ---------------------------------------------------------------
-      # BROWSER ACCESS STEP (only runs when triggered manually with
-      # expose_browser = true via Actions → Run workflow)
-      #
-      # How it works:
-      #   bore is a free, open-source reverse-proxy that creates a
-      #   public TCP tunnel from bore.pub:<random-port> → localhost:5000
-      #   on the GH Actions runner. No account or token needed.
+      # ── 10. Browser access (optional) ────────
+      # Only runs when manually triggered with expose_browser = true.
       #
       # How to use:
-      #   1. Go to Actions tab → "CI-CD Flask App on kind" → Run workflow
-      #   2. Set expose_browser = true
-      #   3. Trigger the run and watch the logs for:
-      #        🌍 Public URL: http://bore.pub:XXXXX
-      #   4. Open that URL in your browser — you'll see the Flask app!
-      #   5. The pipeline waits 90 seconds then continues automatically
-      # ---------------------------------------------------------------
-      - name: "[OPTIONAL] Expose app in browser via bore tunnel"
+      #   Actions → CI-CD Flask App on KIND → Run workflow
+      #   → set expose_browser = true → Run workflow
+      #
+      # Watch the logs for:
+      #   🌍 Public URL: http://bore.pub:XXXXX
+      # Open that URL in your browser to see the live Flask app.
+      # The tunnel stays open for 90 s then the pipeline finishes.
+      - name: Expose app via bore tunnel (browser access)
         if: ${{ github.event.inputs.expose_browser == 'true' }}
         run: |
-          echo "Installing bore tunnel..."
-          curl -L https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar xz
-          chmod +x bore
+          echo "Downloading bore..."
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz \
+            | tar xz -C /usr/local/bin
+          chmod +x /usr/local/bin/bore
 
-          # Start kubectl port-forward to localhost:5000
-          POD_NAME=$(kubectl get pods -l app=flask -o jsonpath='{.items[0].metadata.name}')
-          kubectl port-forward pod/$POD_NAME $APP_PORT:$APP_PORT &
+          # Re-open port-forward (previous one was killed after test)
+          POD=$(kubectl get pods -l app=flask -o jsonpath='{.items[0].metadata.name}')
+          kubectl port-forward pod/$POD $APP_PORT:$APP_PORT &
           sleep 3
 
-          # Start bore tunnel in background, capture output
-          ./bore local $APP_PORT --to bore.pub > /tmp/bore.log 2>&1 &
+          # Open bore tunnel
+          bore local $APP_PORT --to bore.pub > /tmp/bore.log 2>&1 &
           BORE_PID=$!
           sleep 5
 
-          # Extract the public port from bore output
-          BORE_PORT=$(grep -oP 'bore.pub:\K[0-9]+' /tmp/bore.log | head -1)
+          BORE_PORT=$(grep -oP 'bore\.pub:\K[0-9]+' /tmp/bore.log | head -1)
 
           echo ""
-          echo "===========================================================" 
+          echo "============================================================"
           echo " 🌍 Public URL: http://bore.pub:$BORE_PORT"
-          echo " Open this in your browser NOW to see the Flask app!"
-          echo " Waiting 90 seconds before continuing..."
-          echo "==========================================================="
+          echo " Open this in your browser to see the Flask app live!"
+          echo " Pipeline pauses for 90 seconds then continues..."
+          echo "============================================================"
           echo ""
 
           sleep 90
           kill $BORE_PID 2>/dev/null || true
-          echo "Bore tunnel closed. Continuing pipeline..."
+          echo "Bore tunnel closed."
 
-      # Cleanup kind cluster
-      - name: Cleanup kind cluster
+      # ── 11. Cleanup ──────────────────────────
+      - name: Cleanup KIND cluster
         if: always()
-        run: kind delete cluster --name flask-cluster
+        run: kind delete cluster --name $CLUSTER
