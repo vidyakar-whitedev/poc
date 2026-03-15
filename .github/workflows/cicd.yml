@@ -7,6 +7,17 @@ on:
   pull_request:
     branches:
       - main
+  # Manually trigger with browser access window
+  workflow_dispatch:
+    inputs:
+      expose_browser:
+        description: 'Expose app publicly so you can open it in a browser (bore tunnel)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   IMAGE_NAME: my-flask-app
@@ -157,6 +168,55 @@ jobs:
           echo ""
           echo "✅ Flask app is serving properly!"
           kill $PF_PID 2>/dev/null || true
+
+      # ---------------------------------------------------------------
+      # BROWSER ACCESS STEP (only runs when triggered manually with
+      # expose_browser = true via Actions → Run workflow)
+      #
+      # How it works:
+      #   bore is a free, open-source reverse-proxy that creates a
+      #   public TCP tunnel from bore.pub:<random-port> → localhost:5000
+      #   on the GH Actions runner. No account or token needed.
+      #
+      # How to use:
+      #   1. Go to Actions tab → "CI-CD Flask App on kind" → Run workflow
+      #   2. Set expose_browser = true
+      #   3. Trigger the run and watch the logs for:
+      #        🌍 Public URL: http://bore.pub:XXXXX
+      #   4. Open that URL in your browser — you'll see the Flask app!
+      #   5. The pipeline waits 90 seconds then continues automatically
+      # ---------------------------------------------------------------
+      - name: "[OPTIONAL] Expose app in browser via bore tunnel"
+        if: ${{ github.event.inputs.expose_browser == 'true' }}
+        run: |
+          echo "Installing bore tunnel..."
+          curl -L https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar xz
+          chmod +x bore
+
+          # Start kubectl port-forward to localhost:5000
+          POD_NAME=$(kubectl get pods -l app=flask -o jsonpath='{.items[0].metadata.name}')
+          kubectl port-forward pod/$POD_NAME $APP_PORT:$APP_PORT &
+          sleep 3
+
+          # Start bore tunnel in background, capture output
+          ./bore local $APP_PORT --to bore.pub > /tmp/bore.log 2>&1 &
+          BORE_PID=$!
+          sleep 5
+
+          # Extract the public port from bore output
+          BORE_PORT=$(grep -oP 'bore.pub:\K[0-9]+' /tmp/bore.log | head -1)
+
+          echo ""
+          echo "===========================================================" 
+          echo " 🌍 Public URL: http://bore.pub:$BORE_PORT"
+          echo " Open this in your browser NOW to see the Flask app!"
+          echo " Waiting 90 seconds before continuing..."
+          echo "==========================================================="
+          echo ""
+
+          sleep 90
+          kill $BORE_PID 2>/dev/null || true
+          echo "Bore tunnel closed. Continuing pipeline..."
 
       # Cleanup kind cluster
       - name: Cleanup kind cluster
