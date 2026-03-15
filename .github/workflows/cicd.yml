@@ -11,7 +11,8 @@ on:
 env:
   IMAGE_NAME: my-flask-app
   IMAGE_TAG: latest
-  NODE_PORT: 30000        # Must match service.yaml nodePort AND kind-config.yaml hostPort
+  APP_PORT: 5000          # Flask container port (used for port-forward in CI)
+  NODE_PORT: 30000        # NodePort in service.yaml (used in local script only)
   SCANNER_REPORT: scanner.txt
   # DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USERNAME }}
   # DOCKERHUB_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
@@ -88,7 +89,7 @@ jobs:
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
 
-      # Create kind cluster with port mapping (extraPortMappings → localhost:30000 works directly)
+      # Create kind cluster (kind-config.yaml has extraPortMappings for local use)
       - name: Create kind cluster
         run: kind create cluster --name flask-cluster --config kind-config.yaml
 
@@ -120,12 +121,21 @@ jobs:
         run: |
           kubectl wait --for=condition=ready pod -l app=flask --timeout=120s
 
-      # Test Flask app via NodePort (extraPortMappings makes localhost:30000 reachable directly)
+      # Test Flask app via port-forward
+      # NOTE: In GitHub Actions, the runner is a private remote VM — there is NO way to
+      # open a browser to localhost:30000 from outside. NodePort extraPortMappings only
+      # works reliably on your local Mac. In CI we use kubectl port-forward, which tunnels
+      # through the kube-apiserver and works reliably regardless of Docker network config.
       - name: Test Flask App
         run: |
+          POD_NAME=$(kubectl get pods -l app=flask -o jsonpath='{.items[0].metadata.name}')
+          echo "Port-forwarding pod: $POD_NAME"
+          kubectl port-forward pod/$POD_NAME $APP_PORT:$APP_PORT &
+          PF_PID=$!
+
           FLASK_READY=0
           for i in $(seq 1 15); do
-            if curl -fs "http://localhost:$NODE_PORT" > /dev/null 2>&1; then
+            if curl -fs "http://localhost:$APP_PORT" > /dev/null 2>&1; then
               echo "✅ Flask app is ready!"
               FLASK_READY=1
               break
@@ -134,14 +144,19 @@ jobs:
               sleep 2
             fi
           done
+
           if [ "$FLASK_READY" -ne 1 ]; then
             echo "❌ Flask never became ready."
             kubectl logs -l app=flask
+            kill $PF_PID 2>/dev/null || true
             exit 1
           fi
-          curl -f "http://localhost:$NODE_PORT"
+
+          RESPONSE=$(curl -s "http://localhost:$APP_PORT")
+          echo "Flask response: $RESPONSE"
           echo ""
-          echo "✅ Flask app is serving properly at http://localhost:$NODE_PORT"
+          echo "✅ Flask app is serving properly!"
+          kill $PF_PID 2>/dev/null || true
 
       # Cleanup kind cluster
       - name: Cleanup kind cluster
